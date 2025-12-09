@@ -13,6 +13,19 @@ import (
 	badger "github.com/dgraph-io/badger/v4"
 )
 
+func RemoveDuplicates(input []string) []string {
+	seen := make(map[string]struct{})
+	result := []string{}
+
+	for _, v := range input {
+		if _, ok := seen[v]; !ok {
+			seen[v] = struct{}{}
+			result = append(result, v)
+		}
+	}
+
+	return result
+}
 func fileWalker(badgerdb *badger.DB) filepath.WalkFunc {
 
 	return func(path string, info os.FileInfo, err error) error {
@@ -43,18 +56,26 @@ func fileWalker(badgerdb *badger.DB) filepath.WalkFunc {
 				log.Printf("key not found %s", filehashSha256)
 			}
 
-			var valCopy []byte
-
+			var exixtingPaths []string
 			if item != nil {
-				valCopy, err = item.ValueCopy(nil)
+				valCopy, err := item.ValueCopy(nil)
 				if err != nil {
 					return err
 				}
-				fmt.Printf("The existing value is: %s\n", valCopy)
+				err = json.Unmarshal(valCopy, &exixtingPaths)
+				if err != nil {
+					return err
+				}
+			} else {
+				exixtingPaths = []string{}
 			}
 
+			exixtingPaths = append(exixtingPaths, path)
+			exixtingPaths = RemoveDuplicates(exixtingPaths)
+			fmt.Printf("The values are: %v\n", exixtingPaths)
 			// Use the transaction...
-			err = txn.Set(filehashSha256, []byte(path))
+			marshalled, _ := json.Marshal(exixtingPaths)
+			err = txn.Set(filehashSha256, marshalled)
 			if err != nil {
 				return err
 			}
