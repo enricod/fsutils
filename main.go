@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	badger "github.com/dgraph-io/badger/v4"
 )
 
-func fileWalker(hashes map[string][]string) filepath.WalkFunc {
+func fileWalker(badgerdb *badger.DB) filepath.WalkFunc {
 
 	return func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -19,19 +21,49 @@ func fileWalker(hashes map[string][]string) filepath.WalkFunc {
 			return nil
 		}
 
-		if !info.IsDir() && !strings.HasSuffix(path, "sock") {
+		if !info.IsDir() && !strings.HasSuffix(path, ".fsutils-badger") {
 			f, err := os.Open(path)
 			if err != nil {
 				fmt.Println(err)
 				return nil
 			}
 			defer f.Close()
-			h := sha256.New()
-			if _, err := io.Copy(h, f); err != nil {
+			filehash := sha256.New()
+			if _, err := io.Copy(filehash, f); err != nil {
 				log.Fatal(err)
 			}
-			sha256Sum := fmt.Sprintf("%x", h.Sum(nil))
-			hashes[sha256Sum] = append(hashes[sha256Sum], path) // md5s[md5value] = path
+			//sha256Sum := fmt.Sprintf("%x", h.Sum(nil))
+			filehashSha256 := filehash.Sum(nil)
+
+			txn := badgerdb.NewTransaction(true)
+			defer txn.Discard()
+
+			item, err := txn.Get([]byte(filehashSha256))
+			if err != nil {
+				log.Printf("key not found %s", filehashSha256)
+			}
+
+			var valCopy []byte
+
+			if item != nil {
+				valCopy, err = item.ValueCopy(nil)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("The existing value is: %s\n", valCopy)
+			}
+
+			// Use the transaction...
+			err = txn.Set(filehashSha256, []byte(path))
+			if err != nil {
+				return err
+			}
+			// Commit the transaction and check for error.
+			if err := txn.Commit(); err != nil {
+				return err
+			}
+
+			//hashes[sha256Sum] = append(hashes[sha256Sum], path) // md5s[md5value] = path
 			// fmt.Printf("%s \t-> %s \n", path, md5value)
 		}
 		return nil
@@ -67,13 +99,19 @@ func main() {
 	switch cmd {
 	case "find-duplicates":
 		{
+
 			var dir string
 			if len(os.Args) == 3 {
 				dir = os.Args[2]
 			} else {
 				dir = "."
 			}
-			err := filepath.Walk(dir, fileWalker(hashes))
+			badgerdb, err := badger.Open(badger.DefaultOptions(dir + "/.fsutils.badger"))
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer badgerdb.Close()
+			err = filepath.Walk(dir, fileWalker(badgerdb))
 			if err != nil {
 				log.Fatal(err)
 			}
